@@ -6,9 +6,14 @@ from llama_index.core import Settings, StorageContext, VectorStoreIndex, SimpleD
 from llama_index.vector_stores.lancedb import LanceDBVectorStore
 from llama_index.core.node_parser import SentenceSplitter, SemanticSplitterNodeParser
 from llama_index.core.ingestion import IngestionPipeline
+from llama_index.core import KnowledgeGraphIndex
+from llama_index.graph_stores.kuzu import KuzuGraphStore
 from lancedb.rerankers import ColbertReranker
-import streamlit as st
+
 import lancedb
+import kuzu
+
+import streamlit as st
 import dotenv
 import os
 
@@ -55,38 +60,38 @@ Settings.embed_model = embed_model
 documents = SimpleDirectoryReader(input_dir="./data", recursive=True).load_data()
 
 vector_store = LanceDBVectorStore(
-    uri="./lancedb/.lancedb",
+    uri="./.db/.lancedb",
     reranker=ColbertReranker(),
     mode="overwrite",
     query_type="hybrid"
 )
 
-storage_context = StorageContext.from_defaults(vector_store=vector_store)
+# Create Kuzu graph store
+kuzu_db = kuzu.Database("./.db/.kuzudb")
+graph_store = KuzuGraphStore(database=kuzu_db)
 
-pipeline = IngestionPipeline(
-    transformations=[
-        splitter,
-        base_splitter
-    ],
+# Create a storage context with both vector store and graph store
+storage_context = StorageContext.from_defaults(
     vector_store=vector_store,
+    graph_store=graph_store
 )
 
-pipeline.run(documents=documents)
-
-# Create a vector index from the documents (try later to use from_vector_store or from_table)
-vector_index = VectorStoreIndex.from_documents(
-    documents=documents,
+# Create a knowledge graph index
+kg_index = KnowledgeGraphIndex.from_documents(
+    documents,
     storage_context=storage_context,
+    max_triplets_per_chunk=10
 )
 
-# query_engine = vector_index.as_query_engine(query_mode="hybrid")
-#
-# response = query_engine.query("What are the components of a forensic evaluation?")
-# print(response)
-#
+# Create a hybrid query engine that combines vector and graph search
+hybrid_query_engine = kg_index.as_query_engine(
+    include_text=True,
+    response_mode="tree_summarize",
+    verbose=True
+)
 
-
-chat_engine = vector_index.as_chat_engine(chate_mode="context", llm=llm, verbose=True)
+# Update the chat engine to use the hybrid query engine
+chat_engine = hybrid_query_engine.as_chat_engine(chat_mode="context", verbose=True)
 
 if prompt := st.chat_input("Your question"): # Prompt for user input and save to chat history
     st.session_state.messages.append({"role": "user", "content": prompt})
